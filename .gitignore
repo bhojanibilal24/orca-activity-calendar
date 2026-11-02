@@ -1,0 +1,6 @@
+node_modules/
+.data/
+dist/
+.orca/
+.DS_Store
+*.log
