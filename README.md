@@ -50,7 +50,7 @@ Requires **Orca 1.4.246 or later**, with its supported panel-to-worker bridge. T
 The [community listing](https://www.onorca.dev/plugins/bhojanibilal24/orca-activity-calendar) provides the install link once Orca’s directory has indexed the release. You can also install the published release directly:
 
 1. In Orca, open **Settings → Plugins → Add plugin → From a Git URL…**
-2. Paste `https://github.com/bhojanibilal24/orca-activity-calendar#v0.1.3`.
+2. Paste `https://github.com/bhojanibilal24/orca-activity-calendar#v0.1.4`.
 3. Review the worker access, install, and enable the plugin.
 4. Click the **calendar icon in the right sidebar**.
 
@@ -137,7 +137,7 @@ npm run package
 
 Pure interval and parser tests cover overlap, duplicate transcripts, clipping, missing turn completions, midnight/DST boundaries, and CSV formula injection. History-index tests cover duplicate provider copies, partial transcript writes, cache reuse, and missing provider folders. Worker and client tests verify real-index transport, privacy scope, stable chunks for large Unicode histories, worker restarts, saved colors, and native CSV export. `npm run check` verifies entries, manifest fields, and JavaScript syntax. Use the target Orca’s `plugin validate`, `plugin check`, and native sidebar verification before release.
 
-No runtime dependencies, CDN assets, or telemetry. Geist is bundled locally under the SIL Open Font License; see `web/fonts/OFL.txt`. The UI is plain ES modules and CSS; the worker uses Node’s standard library.
+No runtime dependencies, bundled fonts, CDN assets, or telemetry. The UI uses system fonts and Orca’s theme colors, with plain ES modules and CSS; the worker uses Node’s standard library.
 
 `npm run package` rebuilds the installable folder with only runtime modules, panel assets, and documentation/licenses. Tests, build scripts, and project configuration stay in the repository.
 
