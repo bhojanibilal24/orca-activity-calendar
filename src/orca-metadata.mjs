@@ -8,11 +8,21 @@ export function orcaDataDirectory(home = homedir()) {
     path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Orca');
 }
 
+/** Compares paths the way both platforms write them, without resolving anything on disk. */
+export function normalizePath(value) {
+  const text = String(value || '').replaceAll('\\', '/').replace(/\/+$/, '');
+  return text === '' ? '' : text;
+}
+
 export function metadataFromDocuments({ workspaceSession = {}, worktreeMeta = {}, settings = {} } = {}) {
-  const titles = new Map(), titlePriorities = new Map(), workspaces = new Map();
+  const titles = new Map(), titlePriorities = new Map(), workspaces = new Map(), worktreePaths = new Set();
   for (const [id, meta] of Object.entries(worktreeMeta)) {
     const cwd = id.split('::').at(-1);
     if (meta.displayName) workspaces.set(cwd, meta.displayName);
+    // Orca's own record of where its worktrees are. Server images keep them somewhere else
+    // entirely from a laptop, so the paths are read rather than guessed.
+    const normalized = normalizePath(cwd);
+    if (/^(?:\/|[a-zA-Z]:\/)/.test(normalized)) worktreePaths.add(normalized);
   }
   const visit = (node, cwd = '', depth = 0, sourcePriority = 0) => {
     if (!node || typeof node !== 'object' || depth > 20) return;
@@ -38,7 +48,7 @@ export function metadataFromDocuments({ workspaceSession = {}, worktreeMeta = {}
     }
   };
   visit(workspaceSession);
-  return { titles, workspaces, theme: ['dark', 'light'].includes(settings.theme) ? settings.theme : 'system' };
+  return { titles, workspaces, worktreePaths, theme: ['dark', 'light'].includes(settings.theme) ? settings.theme : 'system' };
 }
 
 export class OrcaMetadata {
@@ -64,6 +74,15 @@ export class OrcaMetadata {
     } catch (error) {
       this.status = { available: false, namedSessions: this.data.titles.size, warning: 'Orca names unavailable; showing recorded task titles.' };
     } finally { db?.close(); }
+  }
+  /** Whether a path is inside one of this host's Orca worktrees. */
+  isManagedPath(cwd) {
+    const value = normalizePath(cwd);
+    if (!value) return false;
+    for (const root of this.data.worktreePaths || []) {
+      if (value === root || value.startsWith(`${root}/`)) return true;
+    }
+    return false;
   }
   decorate(session) {
     const named = this.data.titles.get(session.key);

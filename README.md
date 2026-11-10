@@ -24,6 +24,7 @@ Activity Calendar puts those sessions on one timeline. Use it to review a busy d
 | Prepare a status update | **Copy work recap** collects titles and latest recorded response excerpts for threads active in the selected period. |
 | Review or export agent hours | **Time sheet** shows weekly recorded hours by thread and day, with CSV export. |
 | Narrow the view | Filter by project or provider, search task text, or click a worktree in the color legend. |
+| Follow work on another machine | Pick a paired Orca server in the toolbar to see that host's own calendar. See [Other Orca hosts](#other-orca-hosts). |
 
 Subagents and sessions outside Orca can be included through **Data sources**. The calendar refreshes as local history changes.
 
@@ -76,6 +77,42 @@ A folder may also be loaded during development using `orca plugin dev load . --j
 2. **Build the timeline.** Recorded turns supply the activity intervals. Nearby turns in the same thread can be merged into calendar blocks, which are rounded to 15-minute slots.
 3. **Explore the result.** Orca’s panel bridge delivers the data to the sidebar. Filter it, inspect threads, copy a recap, or export a timesheet. Timesheets use recorded turn time, while the calendar uses merged and rounded display blocks.
 
+## Other Orca hosts
+
+Agent work on a paired Orca server lives on that machine: its transcripts, and the turn timestamps a calendar is built from, never reach your laptop. So the calendar does not try to read them from here. Instead **each host runs its own Activity Calendar**, indexes its own logs, and this panel asks it for the finished calendar.
+
+When more than one host is paired, a **host picker** appears in the toolbar. Pick a host and the calendar, timesheet, recap, and CSV export all describe that machine. Your own machine is always first and always works.
+
+To add a host, run this once per server, naming it as `orca host list` shows it.
+
+**The folder must already exist on that host, and the path is that host's path.** Write it absolute, and quote it: an unquoted `~` is expanded by your own shell before Orca sees it, which sends your laptop's home directory to a Linux server and fails with *“… is not a folder on the Orca host.”*
+
+```bash
+# 1. Copy this working tree to that host. Everything travels over Orca's paired
+#    connection: no repository, no SSH key, no credentials.
+node scripts/sync-host.mjs "<host>"
+
+# 2. Load it there. Orca prints a fingerprint; re-run the same command with
+#    --approve <fingerprint> to confirm.
+orca plugin dev load '/workspace/orca-activity-calendar' --environment "<host>"
+```
+
+`sync-host.mjs` packages the plugin, carries it across in verified chunks, checks its SHA-256 on the far side, and swaps the folder into place atomically. Re-run it after any change and Orca reloads the plugin there; step 2 is needed only the first time, since later edits to an approved development folder run without asking again. Pass `--dir` for a different absolute path on that host, or `--worktree <selector>` to choose where its terminal opens.
+
+Alternatively, if the host can reach a repository holding this version, clone it there and point step 2 at the clone.
+
+A host needs at least one Orca worktree, because that is where the sync terminal opens. `orca worktree list --environment "<host>"` shows them; a host with none has nowhere to deploy, and generally no agent history to show either.
+
+Then pick the host in the panel. Until that is done the picker shows the host with a ⚠ and explains what is missing.
+
+Notes and limits:
+
+- Only the machine showing the picker needs 0.2.0. A remote host just has to answer `calendar.snapshot`, which every release since 0.1.4 does, so an already-published copy works as a source.
+- `orca plugin dev request` only accepts development plugins, so a remote host needs `orca plugin dev load` rather than `orca plugin install`.
+- Remote answers are cached and refreshed about every 20 seconds, and polled far less often than this machine. **Refresh history** asks the host immediately.
+- Hosts are read one at a time; there is no merged all-hosts total, and each host's hours stay its own.
+- A host that is asleep, unreachable, or without the plugin reports that in the panel and leaves the rest of the calendar working.
+
 ## Data and access
 
 The worker is ordinary Node code and has access to the user’s filesystem and processes, as Orca explains in its plugin review. Its host capabilities are **`agent:read`** (refresh when agent status changes) and **`storage:own`** (keep worktree colors in the plugin’s own store). This implementation:
@@ -84,8 +121,10 @@ The worker is ordinary Node code and has access to the user’s filesystem and p
 - **Reads local provider JSONL files** under `~/.codex/sessions`, Orca’s managed `codex-runtime-home/home/sessions`, and `~/.claude/projects` (using the standard platform-specific Orca application-data directory).
 - Stores a small derived index under **Orca Activity Calendar** in your operating system’s application-data directory. The cache contains task titles, short response excerpts, paths, model names, session IDs, and turn timestamps. It does not copy full transcripts or tool output.
 - Sends derived history to its own sidebar through Orca’s bridge, in consistent chunks below its message-size limit. The installed plugin does not start a local HTTP server or open browser tabs. Worktree colors use the plugin’s own storage.
+- **Reads `orca-environments.json`** for the id and display name of each paired Orca server, so the host picker can list them. The device tokens and public keys stored in that file are never read.
+- **Runs the `orca` command line tool** as a child process, and only while a host other than this machine is selected (see [Other Orca hosts](#other-orca-hosts)). It runs exactly one read-only command, `orca plugin dev request <plugin-key> calendar.snapshot --environment <host-id>`, with every argument passed as its own argv entry and never through a shell; host ids that are not Orca ids are refused before a process starts. The plugin opens no sockets of its own, reads no keys, and sends nothing to an external service: the connection is Orca’s existing paired, end-to-end-encrypted link.
 
-By default, only sessions in Orca workspace paths and Orca’s managed session home are shown. **Data sources → Include sessions outside Orca** shows other sessions in the same provider folders. SSH hosts, OpenCode, Pi, other providers, and native chats without provider JSONL transcripts are not indexed. Missing or deleted logs cannot be recovered. Symlinked session directories are not followed.
+By default, only sessions in Orca workspace paths and Orca’s managed session home are shown. **Data sources → Include sessions outside Orca** shows other sessions in the same provider folders. OpenCode, Pi, other providers, and native chats without provider JSONL transcripts are not indexed. Missing or deleted logs cannot be recovered. Symlinked session directories are not followed. Plain SSH targets that are not paired Orca servers are not indexed; see [Other Orca hosts](#other-orca-hosts).
 
 Cache files are private to the OS user (directory mode `0700`, file mode `0600` on POSIX). Deleting the derived cache directory clears it; the next import rebuilds it from the provider logs. The cache lives outside the repository and release package.
 
@@ -135,7 +174,7 @@ npm run check
 npm run package
 ```
 
-Pure interval and parser tests cover overlap, duplicate transcripts, clipping, missing turn completions, midnight/DST boundaries, and CSV formula injection. History-index tests cover duplicate provider copies, partial transcript writes, cache reuse, and missing provider folders. Worker and client tests verify real-index transport, privacy scope, stable chunks for large Unicode histories, worker restarts, saved colors, and native CSV export. `npm run check` verifies entries, manifest fields, and JavaScript syntax. Use the target Orca’s `plugin validate`, `plugin check`, and native sidebar verification before release.
+Host tests cover environment parsing, hosts whose ids could never reach a command line, and a missing environments file. Remote tests cover chunk reassembly across the CLI bridge, torn or dishonest replies, setup failures reported as guidance, and locating the `orca` binary. Worker tests cover host-tagged sessions, non-blocking remote reads, caching across panel polls, and unreachable hosts. Pure interval and parser tests cover overlap, duplicate transcripts, clipping, missing turn completions, midnight/DST boundaries, and CSV formula injection. History-index tests cover duplicate provider copies, partial transcript writes, cache reuse, and missing provider folders. Worker and client tests verify real-index transport, privacy scope, stable chunks for large Unicode histories, worker restarts, saved colors, and native CSV export. `npm run check` verifies entries, manifest fields, and JavaScript syntax. Use the target Orca’s `plugin validate`, `plugin check`, and native sidebar verification before release.
 
 No runtime dependencies, bundled fonts, CDN assets, or telemetry. The UI uses system fonts and Orca’s theme colors, with plain ES modules and CSS; the worker uses Node’s standard library.
 
