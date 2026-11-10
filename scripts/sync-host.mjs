@@ -8,19 +8,30 @@
 // changes; the host's copy is replaced atomically, and Orca reloads the plugin there.
 
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, rm, mkdtemp } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { readFile, rm, mkdtemp } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const CHUNK = 900;
-const STAGE = '/tmp/.orca-activity-calendar-sync';
+const STAGE = `/tmp/.orca-activity-calendar-sync-${randomUUID()}`;
 
 const [host, ...rest] = process.argv.slice(2);
 const dirFlag = rest.indexOf('--dir');
 const target = dirFlag >= 0 ? rest[dirFlag + 1] : '/workspace/orca-activity-calendar';
 if (!host) { console.error('Usage: node scripts/sync-host.mjs <host> [--dir <path on that host>]'); process.exit(2); }
-if (!/^\//.test(target)) { console.error('--dir must be an absolute path on that host.'); process.exit(2); }
+if (typeof target !== 'string' || !/^\//.test(target) || target === '/') {
+  console.error('--dir must be an absolute, non-root path on that host.'); process.exit(2);
+}
+
+// Remote terminal commands go through a POSIX shell. Quote every path as data, including custom
+// paths containing whitespace or apostrophes; payload chunks contain only base64 characters.
+const quote = value => `'${String(value).replaceAll("'", `'"'"'`)}'`;
+const stage = quote(STAGE);
+const targetPath = quote(target);
+const targetParent = quote(path.posix.dirname(target));
+const incoming = quote(`${target}.incoming-${randomUUID()}`);
+const previous = quote(`${target}.previous-${randomUUID()}`);
 
 const orca = (args, timeout = 120_000) => new Promise((resolve, reject) =>
   execFile('orca', args, { timeout, maxBuffer: 8e6 }, (error, stdout, stderr) => {
@@ -70,28 +81,31 @@ try {
 
   console.log(`Opening a terminal on ${host}…`);
   const created = await orca(['terminal', 'create', '--environment', host, '--worktree', worktree, '--title', 'activity-calendar sync',
-    '--command', `mkdir -p ${STAGE} && rm -f ${STAGE}/plugin.b64 && echo SYNC-READY`, '--json']);
+    '--command', `mkdir -p ${stage} && rm -f ${stage}/plugin.b64 && echo SYNC-READY`, '--json']);
   const handle = created.result.terminal.handle;
   try {
     await expect(handle, 'SYNC-READY');
     for (let offset = 0, n = 0; offset < payload.length; offset += CHUNK) {
       // Base64 has no shell metacharacters, so single quotes make each append literal.
-      await run(handle, `printf '%s' '${payload.slice(offset, offset + CHUNK)}' >> ${STAGE}/plugin.b64`);
+      await run(handle, `printf '%s' '${payload.slice(offset, offset + CHUNK)}' >> ${stage}/plugin.b64`);
       if (++n % 10 === 0) process.stdout.write(`  sent ${Math.min(offset + CHUNK, payload.length)}/${payload.length}\r`);
     }
     console.log(`  sent ${payload.length}/${payload.length}          `);
 
-    await run(handle, `test $(wc -c < ${STAGE}/plugin.b64) -eq ${payload.length} && echo SIZE-OK || echo SIZE-BAD`);
+    await run(handle, `test $(wc -c < ${stage}/plugin.b64) -eq ${payload.length} && echo SIZE-OK || echo SIZE-BAD`);
     await expect(handle, 'SIZE-OK');
 
-    await run(handle, `base64 -d ${STAGE}/plugin.b64 > ${STAGE}/plugin.tgz && echo "${digest}  ${STAGE}/plugin.tgz" | sha256sum -c - && echo HASH-OK || echo HASH-BAD`);
+    await run(handle, `base64 -d ${stage}/plugin.b64 > ${stage}/plugin.tgz && echo "${digest}  ${STAGE}/plugin.tgz" | sha256sum -c - && echo HASH-OK || echo HASH-BAD`);
     await expect(handle, 'HASH-OK');
 
-    // Replace the host's copy atomically so a half-written folder is never loaded.
-    await run(handle, `rm -rf ${STAGE}/out && mkdir -p ${STAGE}/out && tar -xzf ${STAGE}/plugin.tgz -C ${STAGE}/out ` +
-      `&& rm -rf ${target}.old && (test -d ${target} && mv ${target} ${target}.old || true) ` +
-      `&& mkdir -p $(dirname ${target}) && mv ${STAGE}/out/bhojanibilal24.activity-calendar ${target} ` +
-      `&& rm -rf ${target}.old ${STAGE} && echo INSTALLED-$(cat ${target}/orca-plugin.json | tr -d ' \\n' | sed 's/.*"version":"\\([^"]*\\)".*/\\1/')`);
+    // Extract beside the destination so the final rename cannot cross filesystems. If that rename
+    // fails after moving an existing copy aside, restore it before reporting failure.
+    await run(handle, `rm -rf ${incoming} ${previous} && mkdir -p ${targetParent} ${incoming} ` +
+      `&& tar -xzf ${stage}/plugin.tgz -C ${incoming} --strip-components=1 ` +
+      `&& (test ! -e ${targetPath} || mv ${targetPath} ${previous}) ` +
+      `&& (mv ${incoming} ${targetPath} || { test ! -e ${previous} || mv ${previous} ${targetPath}; false; }) ` +
+      `&& rm -rf ${previous} ${stage} ` +
+      `&& echo INSTALLED-$(tr -d ' \\n' < ${targetPath}/orca-plugin.json | sed 's/.*"version":"\\([^"]*\\)".*/\\1/')`);
     const installed = await expect(handle, 'INSTALLED-');
     console.log(`\n${host}: ${installed.slice(installed.indexOf('INSTALLED-'))} at ${target}`);
     console.log('Next: orca plugin dev load \'' + target + '\' --environment "' + host + '"');
