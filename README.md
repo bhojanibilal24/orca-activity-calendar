@@ -88,16 +88,20 @@ To add a host, run this once per server, naming it as `orca host list` shows it.
 **The folder must already exist on that host, and the path is that host's path.** Write it absolute, and quote it: an unquoted `~` is expanded by your own shell before Orca sees it, which sends your laptop's home directory to a Linux server and fails with *“… is not a folder on the Orca host.”*
 
 ```bash
-# 1. Put the plugin on that host, in a terminal that runs there:
-orca terminal create --environment "<host>" --command \
-  'git clone https://github.com/bhojanibilal24/orca-activity-calendar /workspace/orca-activity-calendar'
+# 1. Copy this working tree to that host. Everything travels over Orca's paired
+#    connection: no repository, no SSH key, no credentials.
+node scripts/sync-host.mjs "<host>"
 
-# 2. Load it there, using that host's absolute path. Orca prints a fingerprint;
-#    re-run the same command with --approve <fingerprint> to confirm.
+# 2. Load it there. Orca prints a fingerprint; re-run the same command with
+#    --approve <fingerprint> to confirm.
 orca plugin dev load '/workspace/orca-activity-calendar' --environment "<host>"
 ```
 
-Pick a path that exists on that machine: `/workspace/...` on an Orca server image, `/root/...` or `/home/<user>/...` elsewhere. `orca worktree list --environment "<host>"` shows the paths that host already uses.
+`sync-host.mjs` packages the plugin, carries it across in verified chunks, checks its SHA-256 on the far side, and swaps the folder into place atomically. Re-run it after any change and Orca reloads the plugin there; step 2 is needed only the first time, since later edits to an approved development folder run without asking again. Pass `--dir` for a different absolute path on that host, or `--worktree <selector>` to choose where its terminal opens.
+
+Alternatively, if the host can reach a repository holding this version, clone it there and point step 2 at the clone.
+
+A host needs at least one Orca worktree, because that is where the sync terminal opens. `orca worktree list --environment "<host>"` shows them; a host with none has nowhere to deploy, and generally no agent history to show either.
 
 Then pick the host in the panel. Until that is done the picker shows the host with a ⚠ and explains what is missing.
 
