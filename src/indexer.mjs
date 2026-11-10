@@ -114,7 +114,10 @@ export class HistoryIndex {
   snapshot({ allLocal = false } = {}) {
     const sessions = new Map();
     for (const entry of this.entries.values()) {
-      if ((!allLocal && !entry.managed) || !entry.state.id) continue;
+      // Recomputed here rather than trusted from the cache: Orca's worktree list can change,
+      // and a host keeps its worktrees somewhere this plugin should not try to guess.
+      const managed = entry.managed || this.metadata.isManagedPath?.(entry.state.cwd) === true;
+      if ((!allLocal && !managed) || !entry.state.id) continue;
       const session = materialize(entry.state, { now: this.now(), modifiedAt: entry.modifiedAt });
       if (!session.turns.length) continue;
       // Orca can copy a provider's session into its managed home. Merge turns by stable session ID.

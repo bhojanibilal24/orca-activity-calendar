@@ -70,3 +70,28 @@ test('metadata reads only naming and theme documents without modifying the datab
     await new OrcaMetadata({ database: path.join(temp, 'missing.db') }).refresh();
   } finally { db?.close(); await rm(temp, { recursive: true, force: true }); }
 });
+
+test('Orca worktree paths decide what counts as Orca work, wherever a host keeps them', () => {
+  const data = metadataFromDocuments({ worktreeMeta: {
+    'repo-a::/workspace/projects/shopsbuilder-v2': { displayName: 'shopsbuilder-v2' },
+    'repo-b::/Users/me/orca/workspaces/Atlas/branch': { displayName: 'Atlas' },
+    'repo-c::C:\\Users\\me\\orca\\workspaces\\Win': { displayName: 'Win' },
+    'global-floating-terminal': { displayName: 'Floating' }
+  } });
+  assert.deepEqual([...data.worktreePaths].sort(),
+    ['/Users/me/orca/workspaces/Atlas/branch', '/workspace/projects/shopsbuilder-v2', 'C:/Users/me/orca/workspaces/Win']);
+  // A key that is not a path never becomes a root that swallows everything.
+  assert.equal(data.worktreePaths.has(''), false);
+
+  const metadata = new OrcaMetadata({ directory: '/nowhere' });
+  metadata.data = data;
+  // A server image keeps worktrees far from ~/orca/workspaces; they still count.
+  assert.equal(metadata.isManagedPath('/workspace/projects/shopsbuilder-v2'), true);
+  assert.equal(metadata.isManagedPath('/workspace/projects/shopsbuilder-v2/packages/web'), true);
+  assert.equal(metadata.isManagedPath('C:\\Users\\me\\orca\\workspaces\\Win\\sub'), true);
+  // A sibling that merely shares a prefix is not inside the worktree.
+  assert.equal(metadata.isManagedPath('/workspace/projects/shopsbuilder-v2-old'), false);
+  assert.equal(metadata.isManagedPath('/workspace/other'), false);
+  assert.equal(metadata.isManagedPath(''), false);
+  assert.equal(metadata.isManagedPath(null), false);
+});
