@@ -55,8 +55,11 @@ function worktreesInView(view) {
   }
   return [...groups.values()].map(group => ({ ...group, blocks: view.blocks.filter(b => worktreeKey(b) === group.key) }));
 }
+const LOCAL_HOST = { id: 'local', name: 'This machine', kind: 'local' };
 const state = { anchor: new Date(), span: 1, page: 'calendar', grouping: 'threads', gap: 30, project: '', worktree: '', agent: '', search: '',
-  filtersOpen: false, subagents: false, allLocal: false, snapshot: null, drawer: null, sourcesOpen: false, loading: true, error: '', errorCount: 0 };
+  filtersOpen: false, subagents: false, allLocal: false, snapshot: null, drawer: null, sourcesOpen: false, loading: true, error: '', errorCount: 0,
+  hostId: LOCAL_HOST.id, hosts: [LOCAL_HOST] };
+const currentHost = () => state.hosts.find(host => host.id === state.hostId) || LOCAL_HOST;
 let renderPending, refreshInFlight = false;
 function scheduleRender() { clearTimeout(renderPending); renderPending = setTimeout(render, 80); }
 function currentDays() { return rangeDays(state.anchor, state.page === 'timesheet' ? 7 : state.span); }
@@ -81,14 +84,34 @@ function rangeLabel(days) {
 async function fetchSnapshot() {
   if (refreshInFlight) return;
   refreshInFlight = true;
-  const allLocal = state.allLocal;
+  const allLocal = state.allLocal, hostId = state.hostId;
+  const changed = () => allLocal !== state.allLocal || hostId !== state.hostId;
   try {
-    const snapshot = await client.snapshot(allLocal);
-    if (allLocal !== state.allLocal) return;
+    const snapshot = await client.snapshot(allLocal, hostId);
+    if (changed()) return;
     state.snapshot = snapshot; state.error = ''; state.loading = false;
     render();
-  } catch (error) { state.error = error.message; state.loading = false; render(); }
-  finally { refreshInFlight = false; if (allLocal !== state.allLocal) void fetchSnapshot(); }
+  } catch (error) { if (!changed()) { state.error = error.message; state.loading = false; render(); } }
+  finally { refreshInFlight = false; if (changed()) void fetchSnapshot(); }
+}
+
+async function fetchHosts() {
+  try {
+    const hosts = await client.hosts();
+    if (Array.isArray(hosts) && hosts.length) {
+      state.hosts = hosts;
+      if (!hosts.some(host => host.id === state.hostId)) { state.hostId = LOCAL_HOST.id; void selectHost(LOCAL_HOST.id); }
+      render();
+    }
+  } catch { /* An older Orca or worker has no host list; stay on this machine. */ }
+}
+
+async function selectHost(hostId) {
+  if (state.hostId === hostId) return;
+  state.hostId = hostId; state.snapshot = null; state.loading = true; state.error = '';
+  state.drawer = null; state.worktree = ''; state.project = '';
+  render();
+  await fetchSnapshot();
 }
 
 function metric(name, value, detail) {
@@ -101,7 +124,7 @@ function render() {
   const days = currentDays(), view = currentView(), worktrees = worktreesInView(view), status = state.snapshot?.status;
   root.innerHTML = `<main class="main" aria-label="Activity Calendar">
     <header class="toolbar"><div class="date-controls"><button class="icon-button" data-step="-1" aria-label="Previous period">${icon('arrow')}</button><button class="today-button" data-action="today">Today</button><button class="icon-button next" data-step="1" aria-label="Next period">${icon('arrow')}</button><h1>${esc(rangeLabel(days))}</h1></div>
-      <div class="toolbar-options"><div class="segmented" aria-label="Group calendar">${['threads', 'projects'].map(group => `<button data-group="${group}" class="${state.grouping === group ? 'active' : ''}" aria-pressed="${state.grouping === group}">${group === 'threads' ? 'Threads' : 'Projects'}</button>`).join('')}</div>
+      <div class="toolbar-options">${state.hosts.length > 1 ? `<select id="host-filter" class="host-select" aria-label="Orca host" title="Show another Orca host's calendar">${state.hosts.map(host => `<option value="${esc(host.id)}" ${state.hostId === host.id ? 'selected' : ''}>${esc(host.name)}${host.error ? ' ⚠' : ''}</option>`).join('')}</select>` : ''}<div class="segmented" aria-label="Group calendar">${['threads', 'projects'].map(group => `<button data-group="${group}" class="${state.grouping === group ? 'active' : ''}" aria-pressed="${state.grouping === group}">${group === 'threads' ? 'Threads' : 'Projects'}</button>`).join('')}</div>
       <div class="segmented" aria-label="Merge gap">${[15, 30, 60, 120].map(n => `<button data-gap="${n}" title="Combine activity in the same thread when the gap is ${n} minutes or less" class="${state.gap === n ? 'active' : ''}" aria-pressed="${state.gap === n}">${n < 60 ? n + 'm' : n / 60 + 'h'}</button>`).join('')}</div>
       <div class="segmented" aria-label="Calendar range">${[[1, 'Day'], [3, '3 days'], [7, 'Week']].map(([n, label]) => `<button data-span="${n}" class="${state.page === 'calendar' && state.span === n ? 'active' : ''}" aria-pressed="${state.page === 'calendar' && state.span === n}">${label}</button>`).join('')}<button data-page="timesheet" class="${state.page === 'timesheet' ? 'active' : ''}" aria-pressed="${state.page === 'timesheet'}">Time sheet</button></div>
       <button class="icon-button ${state.filtersOpen ? 'active' : ''}" data-action="filters" title="Search and filters" aria-label="Search and filters" aria-expanded="${state.filtersOpen}">${icon('search')}</button><button class="icon-button" data-action="export" title="Export CSV" aria-label="Export CSV">${icon('download')}</button><button class="icon-button" data-action="sources" title="Data sources" aria-label="Data sources">${icon('layers')}</button><button class="icon-button" data-action="refresh" title="Refresh history" aria-label="Refresh history">${icon('refresh')}</button></div></header>
@@ -110,7 +133,7 @@ function render() {
     ${state.filtersOpen ? `<div class="filters"><label class="search-control">${icon('search')}<input id="search" type="search" placeholder="Find an agent or task…" value="${esc(state.search)}" aria-label="Search tasks"></label><select id="project-filter" aria-label="Filter project"><option value="">All projects</option>${[...new Set((state.snapshot?.sessions || []).map(s => s.project))].sort().map(p => `<option ${state.project === p ? 'selected' : ''} value="${esc(p)}">${esc(p)}</option>`).join('')}</select><select id="agent-filter" aria-label="Filter agent"><option value="">All agents</option><option ${state.agent === 'Codex' ? 'selected' : ''}>Codex</option><option ${state.agent === 'Claude' ? 'selected' : ''}>Claude</option></select><button class="text-button" data-action="clear-filters">Clear filters</button></div>` : ''}
     <div class="worktree-legend" aria-label="Worktrees">${worktrees.map(w => `<button data-worktree="${esc(w.key)}" title="${esc(w.project + ' / ' + w.workspace + '\n' + (w.cwd || ''))}"><span class="color-dot" style="--project:${color(w)}"></span>${esc(w.workspace)} <span class="quiet">${shortDuration(calendarDuration(w.blocks))}</span></button>`).join('')}${state.project || state.worktree || state.search || state.agent ? '<button class="text-button" data-action="clear-filters">Clear filters</button>' : ''}</div>
     <section id="view-content">${!view.sessions.length ? emptyState(status) : state.page === 'timesheet' ? timesheet(view, days) : calendar(view, days)}</section>
-    <footer class="view-footer"><span>Local history · ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}${status?.scanning ? ' · Indexing…' : ''}${status?.errors?.length ? ` · ${status.errors.length} import warnings` : ''}</span><span title="Agent turn spans can include waits and pauses. These are not personal working hours.">${status?.naming?.available ? 'Orca agent names' : 'Recorded task titles'} · Agent time</span><button class="text-button" data-action="recap" title="Copy task titles and latest responses for the selected period">${icon('copy')}Copy work recap</button></footer>
+    <footer class="view-footer"><span>${esc(currentHost().kind === 'local' ? 'Local history' : `${currentHost().name} · remote`)} · ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}${status?.scanning ? ' · Indexing…' : ''}${status?.errors?.length ? ` · ${status.errors.length} import warnings` : ''}</span><span title="Agent turn spans can include waits and pauses. These are not personal working hours.">${status?.naming?.available ? 'Orca agent names' : 'Recorded task titles'} · Agent time</span><button class="text-button" data-action="recap" title="Copy task titles and latest responses for the selected period">${icon('copy')}Copy work recap</button></footer>
     </main>${state.drawer ? detailDrawer(view) : ''}${state.sourcesOpen ? sourcesModal() : ''}`;
   const next = document.querySelector('.calendar-scroll, .timesheet-scroll');
   if (scroll && next) { next.scrollTop = scroll.top; next.scrollLeft = scroll.left; }
@@ -120,9 +143,22 @@ function render() {
   }
 }
 
+const REMOTE_HINTS = {
+  remote_not_loaded: 'Activity Calendar is not running on that host yet. On that machine, run “orca plugin dev load <folder>”, or from here add “--environment” to name it.',
+  remote_outdated: 'That host runs an older Activity Calendar. Update it there, then refresh.',
+  remote_timeout: 'That host did not answer in time. It may be asleep or offline.',
+  cli_missing: 'The “orca” command line tool was not found, so other hosts cannot be reached. Install Orca’s CLI and reload the panel.',
+  remote_too_large: 'That host has more history than the calendar can carry across in one read.'
+};
+const remoteHint = code => REMOTE_HINTS[code] || '';
+
 function emptyState(status) {
   const scanning = state.loading || status?.scanning;
-  return `<div class="empty-state">${icon(scanning ? 'refresh' : 'calendar')}<h3>${scanning ? 'Gathering your agent history…' : 'A little quiet here.'}</h3><p>${scanning ? 'Reading local session timestamps. Your first import can take a moment.' : state.search || state.project || state.worktree || state.agent ? 'No activity matches these filters. Try another project or search.' : 'No agent turns in this period. Choose a recent active week or check your data sources.'}</p>${!scanning && (state.snapshot?.sessions || []).length ? '<button class="button" data-action="latest">Go to latest activity</button>' : ''}${!scanning ? '<button class="text-button" data-action="sources">Check data sources</button>' : ''}</div>`;
+  const hint = remoteHint(status?.remoteCode);
+  if (hint && !scanning) {
+    return `<div class="empty-state">${icon('layers')}<h3>${esc(currentHost().name)} is not sharing a calendar yet.</h3><p>${esc(hint)}</p><button class="text-button" data-action="sources">Check data sources</button></div>`;
+  }
+  return `<div class="empty-state">${icon(scanning ? 'refresh' : 'calendar')}<h3>${scanning ? 'Gathering your agent history…' : 'A little quiet here.'}</h3><p>${scanning ? (currentHost().kind === 'local' ? 'Reading local session timestamps. Your first import can take a moment.' : `Asking ${esc(currentHost().name)} for its calendar. The first read can take a moment.`) : state.search || state.project || state.worktree || state.agent ? 'No activity matches these filters. Try another project or search.' : 'No agent turns in this period. Choose a recent active week or check your data sources.'}</p>${!scanning && (state.snapshot?.sessions || []).length ? '<button class="button" data-action="latest">Go to latest activity</button>' : ''}${!scanning ? '<button class="text-button" data-action="sources">Check data sources</button>' : ''}</div>`;
 }
 
 function calendar(view, days) {
@@ -168,7 +204,9 @@ function detailDrawer(view) {
 
 function sourcesModal() {
   const status = state.snapshot?.status;
-  return `<div class="overlay" data-action="close-sources"></div><section class="sources-modal" role="dialog" aria-modal="true" aria-label="Data sources" tabindex="-1"><button class="icon-button drawer-close" data-action="close-sources" aria-label="Close data sources">${icon('close')}</button><h2>Data sources</h2><p class="modal-intro">The calendar reads timestamps, task titles, and short response excerpts from local Codex and Claude session logs. It never changes those logs or sends them to an external service.</p><p class="naming-status">${status?.naming?.available ? `Names match Orca’s active profile (${status.naming.namedSessions} named sessions).` : 'Orca names are unavailable. Task titles from transcripts are shown as a fallback.'}</p><div class="source-list">${status?.sources?.length ? status.sources.map(s => `<div class="source-item"><div>${icon(s.available ? 'check' : 'dot')}<strong>${esc(s.agent)}${s.managed ? ' · Orca managed' : ''}</strong><span>${s.available ? `${s.files} files` : 'Not found'}</span></div><code>${esc(s.path)}</code></div>`).join('') : '<p class="quiet">History sources appear here after the first scan.</p>'}</div><label class="setting-row"><div><strong>Include sessions outside Orca</strong><p>Show all sessions found in these provider folders.</p></div><input id="all-local" type="checkbox" ${state.allLocal ? 'checked' : ''}></label><label class="setting-row"><div><strong>Include subagents</strong><p>Include child sessions with their own transcript. They add to agent hours and concurrency.</p></div><input id="subagents" type="checkbox" ${state.subagents ? 'checked' : ''}></label><p class="coverage-note">Coverage: local Codex and Claude JSONL sessions. Other providers, remote hosts, deleted logs, and native chats without provider transcripts are not included. These are agent hours, not a measure of your personal attendance.</p>${status?.errors?.length ? `<div class="import-warnings">${status.errors.slice(0, 5).map(e => `<p>${esc(e)}</p>`).join('')}</div>` : ''}<button class="button primary" data-action="refresh">${icon('refresh')}Refresh history</button></section>`;
+  return `<div class="overlay" data-action="close-sources"></div><section class="sources-modal" role="dialog" aria-modal="true" aria-label="Data sources" tabindex="-1"><button class="icon-button drawer-close" data-action="close-sources" aria-label="Close data sources">${icon('close')}</button><h2>Data sources</h2><p class="modal-intro">${currentHost().kind === 'local'
+    ? 'The calendar reads timestamps, task titles, and short response excerpts from local Codex and Claude session logs. It never changes those logs or sends them to an external service.'
+    : `${esc(currentHost().name)} runs its own Activity Calendar and reads its own session logs there. This panel asks it for the finished calendar over Orca’s paired connection; no logs are copied and nothing is sent to an external service.`}</p>${state.hosts.length > 1 ? `<div class="host-rows">${state.hosts.map(host => `<div class="source-item"><div>${icon(host.error ? 'dot' : 'check')}<strong>${esc(host.name)}${host.id === state.hostId ? ' · showing' : ''}</strong><span>${esc(host.kind === 'local' ? 'this machine' : host.error ? 'unavailable' : 'paired Orca server')}</span></div>${host.error ? `<code>${esc(host.error)}</code>` : ''}</div>`).join('')}</div>` : ''}<p class="naming-status">${status?.naming?.available ? `Names match Orca’s active profile (${status.naming.namedSessions} named sessions).` : 'Orca names are unavailable. Task titles from transcripts are shown as a fallback.'}</p><div class="source-list">${status?.sources?.length ? status.sources.map(s => `<div class="source-item"><div>${icon(s.available ? 'check' : 'dot')}<strong>${esc(s.agent)}${s.managed ? ' · Orca managed' : ''}</strong><span>${s.available ? `${s.files} files` : 'Not found'}</span></div><code>${esc(s.path)}</code></div>`).join('') : '<p class="quiet">History sources appear here after the first scan.</p>'}</div><label class="setting-row"><div><strong>Include sessions outside Orca</strong><p>Show all sessions found in these provider folders.</p></div><input id="all-local" type="checkbox" ${state.allLocal ? 'checked' : ''}></label><label class="setting-row"><div><strong>Include subagents</strong><p>Include child sessions with their own transcript. They add to agent hours and concurrency.</p></div><input id="subagents" type="checkbox" ${state.subagents ? 'checked' : ''}></label><p class="coverage-note">Coverage: local Codex and Claude JSONL sessions. Other providers, remote hosts, deleted logs, and native chats without provider transcripts are not included. These are agent hours, not a measure of your personal attendance.</p>${status?.errors?.length ? `<div class="import-warnings">${status.errors.slice(0, 5).map(e => `<p>${esc(e)}</p>`).join('')}</div>` : ''}<button class="button primary" data-action="refresh">${icon('refresh')}Refresh history</button></section>`;
 }
 
 function toast(message) {
@@ -213,13 +251,14 @@ root.addEventListener('click', async event => {
   else if (d.action === 'export') exportCSV();
   else if (d.action === 'retry') fetchSnapshot();
   else if (d.action === 'refresh') {
-    try { toast('Checking for new activity…'); await client.refresh(); await fetchSnapshot();
+    try { toast('Checking for new activity…'); await client.refresh(state.hostId); await fetchHosts(); await fetchSnapshot();
     } catch (error) { toast(error.message); }
   }
 });
 root.addEventListener('input', event => { if (event.target.id === 'search') { state.search = event.target.value; scheduleRender(); } });
 root.addEventListener('change', event => {
   const { id, value, checked } = event.target;
+  if (id === 'host-filter') { void selectHost(value); return; }
   if (id === 'project-filter') state.project = value;
   if (id === 'agent-filter') state.agent = value;
   if (id === 'gap') state.gap = Number(value);
@@ -237,8 +276,16 @@ document.addEventListener('keydown', event => {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
 });
+const idle = () => !document.hidden && !state.drawer && !state.sourcesOpen && !['INPUT', 'SELECT'].includes(document.activeElement?.tagName);
 render();
 try { client.onChange(() => { if (!document.hidden && !state.drawer && !state.sourcesOpen) void fetchSnapshot(); }); } catch (error) { state.error = error.message; }
+await fetchHosts();
 await fetchSnapshot();
-setInterval(() => { if (!document.hidden && !state.drawer && !state.sourcesOpen && !['INPUT', 'SELECT'].includes(document.activeElement?.tagName)) fetchSnapshot(); }, 5000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.drawer && !state.sourcesOpen && !['INPUT', 'SELECT'].includes(document.activeElement?.tagName)) fetchSnapshot(); });
+// Another host answers over Orca's paired link, so ask it far less often than this machine.
+let polledAt = Date.now();
+setInterval(() => {
+  if (!idle() || Date.now() - polledAt < (currentHost().kind === 'local' ? 5000 : 30_000)) return;
+  polledAt = Date.now(); fetchSnapshot();
+}, 2500);
+setInterval(() => { if (idle()) void fetchHosts(); }, 60_000);
+document.addEventListener('visibilitychange', () => { if (idle()) { polledAt = Date.now(); fetchSnapshot(); } });

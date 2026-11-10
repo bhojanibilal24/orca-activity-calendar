@@ -5,11 +5,14 @@ export function createCalendarClient({ frame = globalThis.orca } = {}) {
     return frame.plugin;
   };
   return {
-    async snapshot(allLocal = false) {
+    async hosts() {
+      return (await bridge().request('calendar.hosts', {})).hosts;
+    },
+    async snapshot(allLocal = false, hostId = 'local') {
       // A lease keeps all pages consistent even when history changes during a read.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          let page = await bridge().request('calendar.snapshot', { allLocal });
+          let page = await bridge().request('calendar.snapshot', { allLocal, hostId });
           const id = page.id, total = page.total;
           let data = '', offset = 0;
           while (true) {
@@ -26,8 +29,8 @@ export function createCalendarClient({ frame = globalThis.orca } = {}) {
         }
       }
     },
-    async refresh() {
-      return bridge().request('calendar.refresh', {}, { timeoutMs: 120_000 });
+    async refresh(hostId = 'local') {
+      return bridge().request('calendar.refresh', { hostId }, { timeoutMs: 120_000 });
     },
     async loadColors() {
       return (await frame.storage.get(key)) || [];

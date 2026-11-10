@@ -8,6 +8,7 @@ const releaseFiles = [
   'orca-plugin.json', 'README.md', 'LICENSE',
   'src/worker.mjs', 'src/indexer.mjs', 'src/orca-metadata.mjs',
   'src/parsers.mjs', 'src/intervals.mjs', 'src/dates.mjs',
+  'src/hosts.mjs', 'src/remote.mjs',
   'web/panel.html', 'web/app.mjs', 'web/client.mjs', 'web/styles.css'
 ];
 await rm(folder, { recursive: true, force: true });

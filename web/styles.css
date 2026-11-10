@@ -173,3 +173,5 @@ select { background: var(--paper); border: 1px solid var(--border); border-radiu
 .worktree-color-band { position: absolute; bottom: 3px; left: 5px; right: 5px; height: 3px; display: flex; gap: 2px; }
 .worktree-color-band i { flex: 1; border-radius: 1px; }
 .drawer-session .color-dot { margin-right: 6px; }
+.host-select { max-width: 150px; flex-shrink: 0; }
+.host-rows { display: grid; gap: 6px; margin: 10px 0 4px; }
